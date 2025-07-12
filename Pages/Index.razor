@@ -1,0 +1,183 @@
+@page "/"
+@using VibeBingo.Application
+@using VibeBingo.Domain
+
+@inject BingoService BingoService
+@inject IJSRuntime JS
+
+<h1>BINGO Caller</h1>
+
+
+<button class="btn btn-primary" @onclick="CallNextBall" disabled="@(autoCalling)">Call Next Ball</button>
+<button class="btn btn-secondary ms-2" @onclick="StartNewRound" disabled="@(autoCalling)">Start New Round</button>
+
+<div class="mt-3 mb-2">
+    <label>Auto-Call Delay:
+        <select @bind="autoCallDelay" class="form-select d-inline w-auto ms-2">
+            <option value="3">3s</option>
+            <option value="5">5s</option>
+            <option value="10">10s</option>
+            <option value="15">15s</option>
+        </select>
+    </label>
+    <button class="btn btn-success ms-2" @onclick="StartAutoCall" disabled="@(autoCalling)">Start Auto-Call</button>
+    <button class="btn btn-danger ms-2" @onclick="StopAutoCall" disabled="@(!autoCalling)">Stop Auto-Call</button>
+    <span class="ms-3">
+        <input type="checkbox" id="debugToggle" @bind="showDebug" class="form-check-input" />
+        <label for="debugToggle" class="form-check-label">Debug</label>
+    </span>
+</div>
+
+@if (autoCalling && showDebug)
+{
+    <div class="alert alert-info py-1 px-2 w-auto d-inline-block">
+        Timer: @timerDisplay
+    </div>
+}
+
+@if (lastCalled is not null)
+{
+    <h2 class="mt-3">Last Called: <span class="fw-bold">@lastCalled.Display</span></h2>
+}
+
+
+<div class="mt-4">
+    <table class="table table-bordered text-center align-middle">
+        <thead>
+            <tr>
+                @foreach (var letter in Enum.GetValues<BingoLetter>())
+                {
+                    <th>@letter</th>
+                }
+            </tr>
+        </thead>
+        <tbody>
+            @for (int row = 0; row < 5; row++)
+            {
+                <tr>
+                    @for (int col = 0; col < 16; col++)
+                    {
+                        var letter = (BingoLetter)row;
+                        var number = col + 1 + (row * 15);
+                        if (number > 75) { <td></td>; continue; }
+                        var ball = BingoService.AllBalls.FirstOrDefault(b => b.Letter == letter && b.Number == number);
+                        if (ball is not null)
+                        {
+                            var isCurrent = lastCalled is not null && lastCalled.Letter == ball.Letter && lastCalled.Number == ball.Number;
+                            var called = BingoService.IsCalled(ball);
+                            var ballClass = isCurrent ? "current" : (called ? "past-called" : "");
+                            <td>
+                                <span class="bingo-ball @ballClass">@ball.Display</span>
+                            </td>
+                        }
+                        else
+                        {
+                            <td></td>
+                        }
+                    }
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    BingoBall? lastCalled;
+    bool autoCalling = false;
+    int autoCallDelay = 5; // seconds
+    bool showDebug = false;
+    int timer = 0;
+    System.Threading.Timer? autoCallTimer;
+
+    string timerDisplay => $"{timer}s / {autoCallDelay}s";
+
+    protected override void OnInitialized()
+    {
+        lastCalled = null;
+    }
+
+
+    async void CallNextBall()
+    {
+        lastCalled = BingoService.CallNextBall();
+        if (lastCalled is not null)
+        {
+            var ttsText = $"{lastCalled.Letter} {NumberToWords(lastCalled.Number)}";
+            await JS.InvokeVoidAsync("bingoSpeak", ttsText);
+        }
+        StateHasChanged();
+    }
+
+    string NumberToWords(int number)
+    {
+        if (number == 0) return "zero";
+        if (number < 0) return "minus " + NumberToWords(Math.Abs(number));
+        if (number <= 20)
+        {
+            string[] units = { "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty" };
+            return units[number];
+        }
+        if (number < 100)
+        {
+            string[] tens = { "zero", "ten", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety" };
+            int ten = number / 10;
+            int unit = number % 10;
+            return tens[ten] + (unit > 0 ? "-" + NumberToWords(unit) : "");
+        }
+        return number.ToString();
+    }
+
+    void StartNewRound()
+    {
+        StopAutoCall();
+        BingoService.StartNewRound();
+        lastCalled = null;
+        StateHasChanged();
+    }
+
+    void StartAutoCall()
+    {
+        if (autoCalling) return;
+        autoCalling = true;
+        timer = 0;
+        autoCallTimer = new System.Threading.Timer(AutoCallTick, null, 1000, 1000);
+    }
+
+    void StopAutoCall()
+    {
+        autoCalling = false;
+        autoCallTimer?.Dispose();
+        autoCallTimer = null;
+        timer = 0;
+        StateHasChanged();
+    }
+
+    void AutoCallTick(object? state)
+    {
+        if (!autoCalling)
+        {
+            autoCallTimer?.Dispose();
+            autoCallTimer = null;
+            return;
+        }
+        timer++;
+        if (timer >= autoCallDelay)
+        {
+            InvokeAsync(() =>
+            {
+                CallNextBall();
+                timer = 0;
+                // If no more balls, stop auto-call
+                if (BingoService.AllBalls.All(b => BingoService.IsCalled(b)))
+                {
+                    StopAutoCall();
+                }
+                StateHasChanged();
+            });
+        }
+        else
+        {
+            InvokeAsync(StateHasChanged);
+        }
+    }
+}
